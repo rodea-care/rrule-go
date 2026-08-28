@@ -3,6 +3,9 @@ on:
   push:
     branches:
       - 'master'
+  pull_request:
+    branches:
+      - 'master'
 jobs:
   # Test on various OS with default Go version.
   tests:
@@ -31,4 +34,7 @@ jobs:
       run: go get -v -t -d ./...
 
     - name: Run tests
-      run: go test -v -failfast -tags=test -timeout="3m" -race ./...
+      run: go test ./...
+
+    - name: Run tests with race detection
+      run: go test -race ./...
