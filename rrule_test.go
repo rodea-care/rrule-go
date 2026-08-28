@@ -4049,6 +4049,39 @@ func TestDailyRecurrencePreservesNewYorkLocalTimeAcrossDST(t *testing.T) {
 	}
 }
 
+func TestBySetPosUsesChronologicalCandidateOrder(t *testing.T) {
+	tests := []struct {
+		name     string
+		byhour   []int
+		byminute []int
+	}{
+		{name: "unordered minutes", byhour: []int{3, 6}, byminute: []int{45, 15}},
+		{name: "unordered hours and minutes", byhour: []int{6, 3}, byminute: []int{45, 15}},
+	}
+	want := []time.Time{
+		time.Date(2025, 3, 21, 3, 15, 0, 0, time.UTC),
+		time.Date(2025, 3, 21, 6, 45, 0, 0, time.UTC),
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rule, err := NewRRule(ROption{
+				Freq: DAILY, Count: 2,
+				Dtstart:  time.Date(2025, 3, 21, 0, 0, 0, 0, time.UTC),
+				Byhour:   test.byhour,
+				Byminute: test.byminute,
+				Bysetpos: []int{1, 4},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := rule.All(); !timesEqual(got, want) {
+				t.Errorf("got %v, want %v", got, want)
+			}
+		})
+	}
+}
+
 func BenchmarkIterator(b *testing.B) {
 	type testCase struct {
 		Name   string
