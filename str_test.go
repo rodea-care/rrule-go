@@ -431,3 +431,124 @@ func TestStrSetParseErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestDTStartAndUntilTimezoneHandling(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		defaultZone   string
+		wantStartZone string
+		wantUntil     time.Time
+	}{
+		{
+			name:          "UTC",
+			input:         "DTSTART:20240308T140000Z\nRRULE:FREQ=DAILY;UNTIL=20240310T130000Z",
+			wantStartZone: "UTC",
+			wantUntil:     time.Date(2024, 3, 10, 13, 0, 0, 0, time.UTC),
+		},
+		{
+			name:          "timezone aware New York",
+			input:         "DTSTART;TZID=America/New_York:20240308T090000\nRRULE:FREQ=DAILY;UNTIL=20240310T130000Z",
+			wantStartZone: "America/New_York",
+			wantUntil:     time.Date(2024, 3, 10, 13, 0, 0, 0, time.UTC),
+		},
+		{
+			name:          "timezone aware Bogota",
+			input:         "DTSTART;TZID=America/Bogota:20240308T090000\nRRULE:FREQ=DAILY;UNTIL=20240310T140000Z",
+			wantStartZone: "America/Bogota",
+			wantUntil:     time.Date(2024, 3, 10, 14, 0, 0, 0, time.UTC),
+		},
+		{
+			name:          "floating local time",
+			input:         "DTSTART:20240308T090000\nRRULE:FREQ=DAILY;UNTIL=20240310T090000",
+			defaultZone:   "America/Bogota",
+			wantStartZone: "America/Bogota",
+			wantUntil:     time.Date(2024, 3, 10, 9, 0, 0, 0, mustLoadLocation(t, "America/Bogota")),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			location := time.UTC
+			if test.defaultZone != "" {
+				location = mustLoadLocation(t, test.defaultZone)
+			}
+			option, err := StrToROptionInLocation(test.input, location)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := option.Dtstart.Location().String(); got != test.wantStartZone {
+				t.Errorf("DTSTART location: got %q, want %q", got, test.wantStartZone)
+			}
+			if !option.Until.Equal(test.wantUntil) {
+				t.Errorf("UNTIL: got %v, want %v", option.Until, test.wantUntil)
+			}
+		})
+	}
+}
+
+func TestDTStartAndUntilRejectIncompatibleFormats(t *testing.T) {
+	inputs := []string{
+		"DTSTART:20240308T140000Z\nRRULE:FREQ=DAILY;UNTIL=20240310T090000",
+		"DTSTART:20240308T090000\nRRULE:FREQ=DAILY;UNTIL=20240310T140000Z",
+		"DTSTART;TZID=America/New_York:20240308T090000\nRRULE:FREQ=DAILY;UNTIL=20240310T090000",
+		"DTSTART;TZID=America/New_York:20240308T140000Z\nRRULE:FREQ=DAILY;UNTIL=20240310T140000Z",
+	}
+
+	for _, input := range inputs {
+		if _, err := StrToROption(input); err == nil {
+			t.Errorf("expected incompatible DTSTART/UNTIL formats to fail: %q", input)
+		}
+	}
+}
+
+func TestUntilBoundaryIsInclusive(t *testing.T) {
+	location := mustLoadLocation(t, "America/New_York")
+	rule, err := StrToRRule(
+		"DTSTART;TZID=America/New_York:20240308T090000\n" +
+			"RRULE:FREQ=DAILY;UNTIL=20240310T130000Z",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []time.Time{
+		time.Date(2024, 3, 8, 9, 0, 0, 0, location),
+		time.Date(2024, 3, 9, 9, 0, 0, 0, location),
+		time.Date(2024, 3, 10, 9, 0, 0, 0, location),
+	}
+	got := rule.All()
+	if len(got) != len(want) {
+		t.Fatalf("got %d occurrences, want %d: %v", len(got), len(want), got)
+	}
+	for i := range got {
+		if !got[i].Equal(want[i]) || got[i].Location().String() != want[i].Location().String() {
+			t.Errorf("occurrence %d: got %v, want %v", i, got[i], want[i])
+		}
+	}
+	if after := rule.After(want[len(want)-1], false); !after.IsZero() {
+		t.Errorf("occurrence after UNTIL: got %v, want zero", after)
+	}
+}
+
+func TestTimezoneAwareUntilSerializesAsUTC(t *testing.T) {
+	location := mustLoadLocation(t, "America/New_York")
+	option := ROption{
+		Freq:    DAILY,
+		Dtstart: time.Date(2024, 3, 8, 9, 0, 0, 0, location),
+		Until:   time.Date(2024, 3, 10, 9, 0, 0, 0, location),
+	}
+	want := "FREQ=DAILY;UNTIL=20240310T130000Z"
+	if got := option.RRuleString(); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func mustLoadLocation(t *testing.T, name string) *time.Location {
+	t.Helper()
+	location, err := time.LoadLocation(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return location
+}

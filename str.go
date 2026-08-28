@@ -189,6 +189,9 @@ func StrToROptionInLocation(rfcString string, loc *time.Location) (*ROption, err
 
 	result := ROption{}
 	freqSet := false
+	dtstartGiven := false
+	dtstartIsUTC := false
+	dtstartHasTZID := false
 
 	if dtstartStr != "" {
 		firstName, err := processRRuleName(dtstartStr)
@@ -199,7 +202,11 @@ func StrToROptionInLocation(rfcString string, loc *time.Location) (*ROption, err
 			return nil, fmt.Errorf("expect DTSTART but: %s", firstName)
 		}
 
-		result.Dtstart, err = StrToDtStart(dtstartStr[len(firstName)+1:], loc)
+		dtstartValue := dtstartStr[len(firstName)+1:]
+		dtstartGiven = true
+		dtstartHasTZID = strings.HasPrefix(dtstartValue, "TZID=")
+		dtstartIsUTC = strings.HasSuffix(dtstartValue, "Z")
+		result.Dtstart, err = StrToDtStart(dtstartValue, loc)
 		if err != nil {
 			return nil, fmt.Errorf("StrToDtStart failed: %s", err)
 		}
@@ -221,6 +228,8 @@ func StrToROptionInLocation(rfcString string, loc *time.Location) (*ROption, err
 			result.Freq, e = StrToFreq(value)
 			freqSet = true
 		case "DTSTART":
+			dtstartGiven = true
+			dtstartIsUTC = strings.HasSuffix(value, "Z")
 			result.Dtstart, e = strToTimeInLoc(value, loc)
 		case "INTERVAL":
 			result.Interval, e = strconv.Atoi(value)
@@ -229,7 +238,21 @@ func StrToROptionInLocation(rfcString string, loc *time.Location) (*ROption, err
 		case "COUNT":
 			result.Count, e = strconv.Atoi(value)
 		case "UNTIL":
-			result.Until, e = strToTimeInLoc(value, loc)
+			untilIsUTC := strings.HasSuffix(value, "Z")
+			if dtstartGiven {
+				requiresUTC := dtstartIsUTC || dtstartHasTZID
+				if requiresUTC != untilIsUTC {
+					e = errors.New("UNTIL must be UTC when DTSTART is UTC or has a timezone reference, and local otherwise")
+					break
+				}
+			}
+			untilLocation := loc
+			if untilIsUTC {
+				untilLocation = time.UTC
+			} else if dtstartGiven && !result.Dtstart.IsZero() {
+				untilLocation = result.Dtstart.Location()
+			}
+			result.Until, e = strToTimeInLoc(value, untilLocation)
 		case "BYSETPOS":
 			result.Bysetpos, e = strToInts(value)
 		case "BYMONTH":
@@ -441,21 +464,24 @@ func processRRuleName(line string) (string, error) {
 // StrToDtStart accepts string with format: "(TZID={timezone}:)?{time}" and parses it to a date
 // may be used to parse DTSTART rules, without the DTSTART; part.
 func StrToDtStart(str string, defaultLoc *time.Location) (time.Time, error) {
-	tmp := strings.Split(str, ":")
-	if len(tmp) > 2 || len(tmp) == 0 {
-		return time.Time{}, fmt.Errorf("bad format")
+	parts := strings.Split(str, ":")
+	if len(parts) > 2 || len(parts) == 0 {
+		return time.Time{}, errors.New("bad format")
 	}
 
-	if len(tmp) == 2 {
+	if len(parts) == 2 {
 		// tzid
-		loc, err := parseTZID(tmp[0])
+		loc, err := parseTZID(parts[0])
 		if err != nil {
 			return time.Time{}, err
 		}
-		return strToTimeInLoc(tmp[1], loc)
+		if strings.HasSuffix(parts[1], "Z") {
+			return time.Time{}, errors.New("DTSTART cannot combine TZID with a UTC value")
+		}
+		return strToTimeInLoc(parts[1], loc)
 	}
 	// no tzid, len == 1
-	return strToTimeInLoc(tmp[0], defaultLoc)
+	return strToTimeInLoc(parts[0], defaultLoc)
 }
 
 func parseTZID(s string) (*time.Location, error) {
