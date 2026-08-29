@@ -3926,6 +3926,162 @@ func TestRuleChangeDTStartTimezoneRespected(t *testing.T) {
 	}
 }
 
+func TestHourlyRecurrenceAcrossSydneyDSTStart(t *testing.T) {
+	location, err := time.LoadLocation("Australia/Sydney")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule, err := NewRRule(ROption{
+		Freq: HOURLY, Interval: 1, Count: 3,
+		Dtstart: time.Date(2022, 10, 2, 1, 0, 0, 0, location),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []time.Time{
+		time.Date(2022, 10, 1, 15, 0, 0, 0, time.UTC),
+		time.Date(2022, 10, 1, 16, 0, 0, 0, time.UTC),
+		time.Date(2022, 10, 1, 17, 0, 0, 0, time.UTC),
+	}
+	got := rule.All()
+	if len(got) != len(want) {
+		t.Fatalf("got %d occurrences, want %d", len(got), len(want))
+	}
+	for i := range got {
+		if !got[i].UTC().Equal(want[i]) {
+			t.Errorf("occurrence %d: got %v, want %v", i, got[i].UTC(), want[i])
+		}
+	}
+}
+
+func TestHourlyRecurrenceAcrossSydneyDSTEnd(t *testing.T) {
+	location, err := time.LoadLocation("Australia/Sydney")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule, err := NewRRule(ROption{
+		Freq: HOURLY, Interval: 1, Count: 3,
+		Dtstart: time.Date(2023, 4, 2, 1, 0, 0, 0, location),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []time.Time{
+		time.Date(2023, 4, 1, 14, 0, 0, 0, time.UTC),
+		time.Date(2023, 4, 1, 15, 0, 0, 0, time.UTC),
+		time.Date(2023, 4, 1, 16, 0, 0, 0, time.UTC),
+	}
+	got := rule.All()
+	if len(got) != len(want) {
+		t.Fatalf("got %d occurrences, want %d", len(got), len(want))
+	}
+	for i := range got {
+		if !got[i].UTC().Equal(want[i]) {
+			t.Errorf("occurrence %d: got %v, want %v", i, got[i].UTC(), want[i])
+		}
+	}
+}
+
+func TestDailyRecurrencePreservesNewYorkLocalTimeAcrossDST(t *testing.T) {
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		start    time.Time
+		interval int
+		want     []time.Time
+	}{
+		{
+			name:  "spring daily",
+			start: time.Date(2024, 3, 9, 9, 0, 0, 0, location), interval: 1,
+			want: []time.Time{
+				time.Date(2024, 3, 9, 9, 0, 0, 0, location),
+				time.Date(2024, 3, 10, 9, 0, 0, 0, location),
+				time.Date(2024, 3, 11, 9, 0, 0, 0, location),
+			},
+		},
+		{
+			name:  "spring every two days",
+			start: time.Date(2024, 3, 8, 9, 0, 0, 0, location), interval: 2,
+			want: []time.Time{
+				time.Date(2024, 3, 8, 9, 0, 0, 0, location),
+				time.Date(2024, 3, 10, 9, 0, 0, 0, location),
+				time.Date(2024, 3, 12, 9, 0, 0, 0, location),
+			},
+		},
+		{
+			name:  "fall daily",
+			start: time.Date(2024, 11, 2, 9, 0, 0, 0, location), interval: 1,
+			want: []time.Time{
+				time.Date(2024, 11, 2, 9, 0, 0, 0, location),
+				time.Date(2024, 11, 3, 9, 0, 0, 0, location),
+				time.Date(2024, 11, 4, 9, 0, 0, 0, location),
+			},
+		},
+		{
+			name:  "fall every two days",
+			start: time.Date(2024, 11, 1, 9, 0, 0, 0, location), interval: 2,
+			want: []time.Time{
+				time.Date(2024, 11, 1, 9, 0, 0, 0, location),
+				time.Date(2024, 11, 3, 9, 0, 0, 0, location),
+				time.Date(2024, 11, 5, 9, 0, 0, 0, location),
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rule, err := NewRRule(ROption{
+				Freq: DAILY, Interval: test.interval, Count: len(test.want), Dtstart: test.start,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := rule.All(); !timesEqual(got, test.want) {
+				t.Errorf("got %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestBySetPosUsesChronologicalCandidateOrder(t *testing.T) {
+	tests := []struct {
+		name     string
+		byhour   []int
+		byminute []int
+	}{
+		{name: "unordered minutes", byhour: []int{3, 6}, byminute: []int{45, 15}},
+		{name: "unordered hours and minutes", byhour: []int{6, 3}, byminute: []int{45, 15}},
+	}
+	want := []time.Time{
+		time.Date(2025, 3, 21, 3, 15, 0, 0, time.UTC),
+		time.Date(2025, 3, 21, 6, 45, 0, 0, time.UTC),
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rule, err := NewRRule(ROption{
+				Freq: DAILY, Count: 2,
+				Dtstart:  time.Date(2025, 3, 21, 0, 0, 0, 0, time.UTC),
+				Byhour:   test.byhour,
+				Byminute: test.byminute,
+				Bysetpos: []int{1, 4},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := rule.All(); !timesEqual(got, want) {
+				t.Errorf("got %v, want %v", got, want)
+			}
+		})
+	}
+}
+
 func BenchmarkIterator(b *testing.B) {
 	type testCase struct {
 		Name   string
